@@ -6,10 +6,15 @@ use blstrs::Scalar as Fr;
 use ec_gpu_gen::{
     fft::FftKernel,
     fft_cpu::{parallel_fft, serial_fft},
-    rust_gpu_tools::Device,
+    rust_gpu_tools::{Device, Program},
     threadpool::Worker,
+    vector_op::addv_single_op,
 };
 use ff::{Field, PrimeField};
+#[cfg(feature = "cuda")]
+use ec_gpu_gen::rust_gpu_tools::cuda;
+#[cfg(feature = "opencl")]
+use ec_gpu_gen::rust_gpu_tools::opencl;
 
 fn omega<F: PrimeField>(num_coeffs: usize) -> F {
     // Compute omega, the 2^exp primitive root of unity
@@ -133,4 +138,66 @@ pub fn gpu_fft_many_consistency() {
 
         println!("============================");
     }
+}
+
+#[derive(PartialEq, Debug, Clone, Copy)]
+#[repr(transparent)]
+pub struct GpuScalar(pub Fr);
+impl Default for GpuScalar {
+    fn default() -> Self {
+        Self(Fr::ZERO)
+    }
+}
+
+#[cfg(feature = "cuda")]
+impl cuda::KernelArgument for GpuScalar {
+    fn as_c_void(&self) -> *mut std::ffi::c_void {
+        &self.0 as *const _ as _
+    }
+}
+
+#[cfg(feature = "opencl")]
+impl opencl::KernelArgument for GpuScalar {
+    fn push(&self, kernel: &mut opencl::Kernel) {
+        unsafe { kernel.builder.set_arg(&self.0) };
+    }
+}
+
+#[test]
+pub fn test_vector_add() {
+    fil_logger::maybe_init();
+    let mut rng = rand::thread_rng();
+
+    let devices = Device::all();
+    let programs: Vec<Program> = devices
+        .iter()
+        .map(|device| ec_gpu_gen::program!(device))
+        .collect::<Result<_, _>>()
+        .expect("Cannot create programs!");
+    let program = programs.first().unwrap();
+    
+    let a = Fr::random(&mut rng);
+    let n = 4096 as usize;
+
+    let mut now = Instant::now();
+
+    let gpu_res = addv_single_op::<Fr, GpuScalar>(program, GpuScalar(a), n).expect("GPU FFT failed!");
+    let gpu_dur = now.elapsed().as_secs() * 1000 + now.elapsed().subsec_millis() as u64;
+    println!("GPU took {}ms.", gpu_dur);
+
+    now = Instant::now();
+    let mut acc = Fr::ZERO;
+    let cpu_res = (0..n).map(|_| {
+        acc = acc + Fr::ONE;
+        acc + a
+    })
+    .collect::<Vec<_>>();
+
+    let cpu_dur = now.elapsed().as_secs() * 1000 + now.elapsed().subsec_millis() as u64;
+    println!("CPU took {}ms.", cpu_dur);
+
+    println!("Speedup: x{}", cpu_dur as f32 / gpu_dur as f32);
+
+    assert!(gpu_res == cpu_res)
+
 }

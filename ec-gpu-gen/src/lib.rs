@@ -63,6 +63,9 @@ pub mod multiexp;
 pub mod multiexp_cpu;
 /// Helpers for multithreaded code.
 pub mod threadpool;
+/// Vector operation on the GPU.
+#[cfg(any(feature = "cuda", feature = "opencl"))]
+pub mod vector_op;
 
 /// Re-export rust-gpu-tools as things like [`rust_gpu_tools::Device`] might be needed.
 #[cfg(any(feature = "cuda", feature = "opencl"))]
